@@ -1,0 +1,517 @@
+{
+  "playbook_name": "coinalyze_filter_playbook",
+  "version": "2025-12-05",
+  "author": "Docteja",
+  "description": "Strict Coinalyze filter playbook + current custom filters, encoded for AI models.",
+  "conventions": {
+    "indexing": {
+      "current_bar": "[0]",
+      "previous_bar": "[-1]",
+      "ranges": "[-1:-N] is a backward-looking slice (inclusive start, exclusive end). Example: [-1:-5] means last 4 completed bars.",
+      "note": "Bar 0 is the *current* bar, negative indices step backwards in history."
+    },
+    "functions_allowed": [
+      "SMA",
+      "EMA",
+      "AVG",
+      "SUM",
+      "MIN",
+      "MAX",
+      "ROC",
+      "RSI",
+      "CVD",
+      "CVDSPOT",
+      "PCHANGE",
+      "CHANGE"
+    ],
+    "functions_disallowed": [
+      "IF",
+      "AND",
+      "OR",
+      "SIGN",
+      "ABS",
+      "exponentiation (except where already present in legacy formulas)"
+    ],
+    "division_safety": {
+      "rule": "Always guard denominators to avoid division by zero.",
+      "patterns": [
+        "x / (AVG(series[range]) + 1)",
+        "x / MAX(denominator, 1)"
+      ]
+    },
+    "series_naming": {
+      "price": [
+        "price_5m",
+        "price_1h",
+        "price_1d"
+      ],
+      "volume": [
+        "vol_5m",
+        "vol_1h",
+        "vol_1d"
+      ],
+      "spot_volume": [
+        "volspot_5m",
+        "volspot_1h"
+      ],
+      "taker_volume": [
+        "volbuy_5m",
+        "volsell_5m",
+        "volbuy_1h",
+        "volsell_1h"
+      ],
+      "oi": [
+        "oi_5m",
+        "oi_1h",
+        "oi_1d"
+      ],
+      "funding": [
+        "fr_5m",
+        "fr_1h",
+        "pfr_1h"
+      ]
+    },
+    "spot_led_preference": "By default, interpret CVDSPOT and spot-volume metrics as the primary driver; futures metrics should confirm, not lead, unless specifically stated.",
+    "expression_limit_chars": 300,
+    "threshold_crib": {
+      "expansion_5m": "60–80 = sweet spot; much higher = blow-off risk",
+      "spot_cvd_kick": "> 0 = bullish kick, < 0 = bearish",
+      "spot_cvd_slope": "> 0 = accumulation, < 0 = distribution",
+      "oi_multi_tf_score": "> 0.6 = build, < -0.6 = unwind",
+      "sell_dom_1h": "> 0.55 = aggressive sell dominance",
+      "htf_bb_distance": "use 1h/4h/day BB distance proxies for overextension vs. coiled regimes"
+    }
+  },
+  "filters": [
+    {
+      "id": "fut_spot_vol_ratio",
+      "source": "user_current",
+      "role": "context_trap",
+      "primary_timeframe": "5m",
+      "human_label": "A Fut / Spot Vol ratio",
+      "description": "Futures vs. spot volume imbalance. Very high values flag potential futures-led traps.",
+      "formula": "(AVG(vol_5m[-1:-5])+1)/(AVG(volspot_5m[-1:-5])+1)",
+      "typical_condition": "> 4"
+    },
+    {
+      "id": "buy_sell_volume_value",
+      "source": "user_current",
+      "role": "pump_detector",
+      "primary_timeframe": "5m",
+      "human_label": "BuySellVolume value",
+      "description": "Net taker buy volume vs total volume over recent 5m bars. Positive skew suggests pump pressure.",
+      "formula": "(SUM(volbuy_5m[0:-9]) - SUM(volsell_5m[0:-9])) / AVG(vol_5m[0:-9])",
+      "typical_condition": "> 0.2"
+    },
+    {
+      "id": "core_trio_3",
+      "source": "user_current",
+      "role": "htf_oi_regime",
+      "primary_timeframe": "1h",
+      "human_label": "Core Trio 3",
+      "description": "Medium-horizon OI percentage change; part of core regime assessment trio.",
+      "formula": "PCHANGE( oi_1h[0,-12] )",
+      "typical_condition": "> 10"
+    },
+    {
+      "id": "core_trio_1",
+      "source": "user_current",
+      "role": "htf_spot_cvd_regime",
+      "primary_timeframe": "1h",
+      "human_label": "Core Trio 1",
+      "description": "Spot CVD 12h percentage change; measures spot-led accumulation.",
+      "formula": "PCHANGE( CVDSPOT('1h', 20, true)[0,-12] )",
+      "typical_condition": "> 15"
+    },
+    {
+      "id": "core_trio_2",
+      "source": "user_current",
+      "role": "htf_fut_cvd_regime",
+      "primary_timeframe": "1h",
+      "human_label": "Core Trio 2",
+      "description": "Futures CVD 12h percentage change; large negative values flag futures selling.",
+      "formula": "PCHANGE( CVD('1h', 20, true)[0,-12] )",
+      "typical_condition": "< -15"
+    },
+    {
+      "id": "cvd_divergence_spot_vs_fut",
+      "source": "user_current",
+      "role": "dump_detector",
+      "primary_timeframe": "5m",
+      "human_label": "CVD divergence (futures selling, spot not supporting)",
+      "description": "Spot vs futures CVD per-volume divergence over last 25m. Strong negative = dump, positive = pump.",
+      "formula": "((CVDSPOT('5m',20,true)[0]-CVDSPOT('5m',20,true)[-5])/(AVG(volspot_5m[-1:-5])+1)) - ((CVD('5m',20,true)[0]-CVD('5m',20,true)[-5])/(AVG(vol_5m[-1:-5])+1))",
+      "typical_condition": "<= -0.1 (dump), >= 0.1 (pump)"
+    },
+    {
+      "id": "cvd_slope_spot_25m",
+      "source": "user_current",
+      "role": "ltF_flow_trend",
+      "primary_timeframe": "5m",
+      "human_label": "CVD slope Spot > 0",
+      "description": "Spot CVD slope over last 25m, normalized by spot volume.",
+      "formula": "CVDSPOT('5m',20,true)[0] - CVDSPOT('5m',20,true)[-5]/AVG(volspot_5m[0:-5])",
+      "typical_condition": "> 0"
+    },
+    {
+      "id": "cvd_spot_led_divergence",
+      "source": "user_current",
+      "role": "spot_led_confirmation",
+      "primary_timeframe": "1h",
+      "human_label": "CVD Spot led divergence > 0",
+      "description": "Difference between spot and futures CVD percentage change on 1h; positive means spot leads up.",
+      "formula": "PCHANGE(CVDSPOT('1h',20,true)[0,-1]) - PCHANGE(CVD('1h',20,true)[0,-1])",
+      "typical_condition": "> 0"
+    },
+    {
+      "id": "exit_leverage_exhaustion_ratio",
+      "source": "user_current",
+      "role": "exit_signal",
+      "primary_timeframe": "5m",
+      "human_label": "EXIT : Leverage Exhaustion Ratio",
+      "description": "Price change vs OI change scaled by funding; high values flag leveraged exhaustion and exit zones.",
+      "formula": "(PCHANGE(price_5m[0,-3])*fr_5m[0]*1000)/(PCHANGE(oi_5m[0,-3])+1)",
+      "typical_condition": "> 1.5"
+    },
+    {
+      "id": "explosion_pre_pump_spot_cvd_lead",
+      "source": "user_current",
+      "role": "pre_pump_detector",
+      "primary_timeframe": "1h",
+      "human_label": "Explosion Pre-Pump Predictor (Spot CVD Divergence Lead)",
+      "description": "Spot CVD percentage change minus price percentage change on 1h; spot leading strongly signals pre-pump.",
+      "formula": "PCHANGE(CVDSPOT('1h',20,true)[0,-1]) - PCHANGE(price_1h[0,-1])",
+      "typical_condition": "> 2"
+    },
+    {
+      "id": "explosion_pump_top",
+      "source": "user_current",
+      "role": "top_detector",
+      "primary_timeframe": "1h",
+      "human_label": "Explosion Pump reached top",
+      "description": "Futures CVD vs price percentage divergence; strong negative indicates pump exhaustion / top.",
+      "formula": "PCHANGE(CVD('1h',20,true)[0,-1]) - PCHANGE(price_1h[0,-1]) * 2",
+      "typical_condition": "< -1"
+    },
+    {
+      "id": "explosive_breakout_long_consolidation",
+      "source": "user_current",
+      "role": "breakout_detector",
+      "primary_timeframe": "1h",
+      "human_label": "Explosive Breakout from Long Consolidation",
+      "description": "Combines OI and spot CVD change vs prior tight price range to flag explosive breakout from consolidation.",
+      "formula": "(PCHANGE(oi_1h[0,-3]) + PCHANGE(CVDSPOT('1h',20,true)[0,-3])) / ((MAX(price_1h[-1:-4]) - MIN(price_1h[-1:-4])) / (SMA(price_1h,4)[0] + 0.001) * 10)",
+      "typical_condition": "> 0.5"
+    },
+    {
+      "id": "funding_rate_anomaly",
+      "source": "user_current",
+      "role": "leverage_context",
+      "primary_timeframe": "1h",
+      "human_label": "Funding Rate Anomaly",
+      "description": "Average 1h funding; extremes (very high positive or negative) suggest crowded positioning.",
+      "formula": "AVG(fr_1h[0:-11])",
+      "typical_condition": "extremes (high positive or negative)"
+    },
+    {
+      "id": "healthy_leverage_growth",
+      "source": "user_current",
+      "role": "trend_confirmation",
+      "primary_timeframe": "1h",
+      "human_label": "Healthy Leverage Growth",
+      "description": "Multi-hour OI percentage growth; moderate positive indicates healthy leverage build.",
+      "formula": "PCHANGE(oi_1h, 6)",
+      "typical_condition": "> 0.05"
+    },
+    {
+      "id": "hourly_bid_side_pressure",
+      "source": "user_current",
+      "role": "taker_flow_context",
+      "primary_timeframe": "1h",
+      "human_label": "Hourly Bid-Side Pressure",
+      "description": "Taker buys vs sells over 5 hours; strong >1.5 means aggressive buyers in control.",
+      "formula": "SUM(volbuy_1h[0:-5]) / SUM(volsell_1h[0:-5])",
+      "typical_condition": "> 1.5"
+    },
+    {
+      "id": "hourly_volume_persistence",
+      "source": "user_current",
+      "role": "volume_regime",
+      "primary_timeframe": "1h",
+      "human_label": "Hourly Volume Persistence",
+      "description": "Recent 3h volume vs prior 20h baseline; high values mean sustained elevated activity.",
+      "formula": "AVG(vol_1h[0:-3]) / AVG(vol_1h[-4:-24])",
+      "typical_condition": "> 2"
+    },
+    {
+      "id": "htf_stealth_accumulation_breakout",
+      "source": "user_current",
+      "role": "htf_breakout",
+      "primary_timeframe": "1h",
+      "human_label": "HTF Stealth Accumulation Breakout",
+      "description": "Combines OI and spot CVD growth minus squared price change; flags HTF stealth accumulation turning into breakout.",
+      "formula": "PCHANGE(oi_1h[0,-4]) + PCHANGE(CVDSPOT('1h',20,true)[0,-10]) - (PCHANGE(price_1h[0,-4])^2)",
+      "typical_condition": "> 8"
+    },
+    {
+      "id": "htf_volume_weighted_oi_breakout",
+      "source": "user_current",
+      "role": "htf_breakout",
+      "primary_timeframe": "1h",
+      "human_label": "HTF Volume-Weighted OI Breakout",
+      "description": "OI percentage change scaled by volume spike; higher values indicate volume-confirmed OI breakout.",
+      "formula": "PCHANGE(oi_1h[0,-1]) * (vol_1h[0] / (AVG(vol_1h[0:-10])+1))",
+      "typical_condition": "high positive values"
+    },
+    {
+      "id": "l1_short_spot_cvd_accel_down",
+      "source": "user_current",
+      "role": "short_setup",
+      "primary_timeframe": "1h",
+      "human_label": "L1 SHORT",
+      "description": "Acceleration of spot CVD downwards; used as early short trigger.",
+      "formula": "PCHANGE(CVDSPOT('1h',10,true)[0,-1]) - PCHANGE(CVDSPOT('1h',10,true)[-1,-2])",
+      "typical_condition": "strongly negative for short bias"
+    },
+    {
+      "id": "layer1_spot_cvd_vs_price_divergence",
+      "source": "user_current",
+      "role": "htf_regime",
+      "primary_timeframe": "1d",
+      "human_label": "Layer 1 : Spot CVD vs. Price Divergence",
+      "description": "Daily spot CVD percentage change; large positive divergence vs price supports major cycle shifts.",
+      "formula": "PCHANGE(CVDSPOT('1d',20,true)[0,-9])",
+      "typical_condition": "> 10"
+    },
+    {
+      "id": "layer1_oi_growth_consolidation_pt2",
+      "source": "user_current",
+      "role": "htf_consolidation",
+      "primary_timeframe": "1d",
+      "human_label": "Layer 1 OI Growth in Consolidation pt 2",
+      "description": "Daily price percentage change during consolidation; near flat price but positive OI is stealth build context.",
+      "formula": "PCHANGE(price_1d[0,-9])",
+      "typical_condition": "> -5"
+    },
+    {
+      "id": "layer1_oi_growth_consolidation_pt1",
+      "source": "user_current",
+      "role": "htf_consolidation",
+      "primary_timeframe": "1d",
+      "human_label": "Layer 1:OI Growth in Consolidation pt 1",
+      "description": "Daily OI percentage growth over 9 days; sustained OI build in a range.",
+      "formula": "PCHANGE(oi_1d[0,-9])",
+      "typical_condition": "> 15"
+    },
+    {
+      "id": "layer2_volume_persistence_pre_breakout",
+      "source": "user_current",
+      "role": "pre_breakout_confirm",
+      "primary_timeframe": "1h",
+      "human_label": "Layer 2 : Volume Persistence Pre-Breakout",
+      "description": "Current 1h volume vs last 10h baseline; high values show fresh fuel just before breakout.",
+      "formula": "vol_1h[0] / AVG(vol_1h[-1:-10])",
+      "typical_condition": "> 2"
+    },
+    {
+      "id": "long_squeeze_exhaustion_1h",
+      "source": "user_current",
+      "role": "long_squeeze_detector",
+      "primary_timeframe": "1h",
+      "human_label": "Long-Squeeze Exhaustion 1h",
+      "description": "Price dump vs OI dump; large positive values mean longs wiped out and reversal potential.",
+      "formula": "(-PCHANGE(price_1h[0,-1])) - PCHANGE(oi_1h[0,-1])",
+      "typical_condition": "> 2"
+    },
+    {
+      "id": "ltf_momentum_ignition",
+      "source": "user_current",
+      "role": "early_pump_detector",
+      "primary_timeframe": "5m",
+      "human_label": "LTF Momentum Ignition",
+      "description": "Combination of spot CVD 5m percentage change and OI change as low-timeframe ignition meter.",
+      "formula": "(PCHANGE(CVDSPOT('5m',30,true)[0,-1])*1.5) + PCHANGE(oi_5m[0,-1])",
+      "typical_condition": "> 10"
+    },
+    {
+      "id": "nihilus_vol_1",
+      "source": "user_current",
+      "role": "htf_rvol",
+      "primary_timeframe": "1d",
+      "human_label": "Nihilus vol 1",
+      "description": "Daily volume relative to 20-day average; measures HTF relative volume.",
+      "formula": "vol_1d[0] / (SMA(vol_1d,20)[0] + 1)",
+      "typical_condition": "> 2"
+    },
+    {
+      "id": "nihilus_2_oi_fuel_meter",
+      "source": "user_current",
+      "role": "fuel_meter",
+      "primary_timeframe": "5m",
+      "human_label": "nihilus_2 OI Fuel Meter",
+      "description": "Short-term OI and spot CVD combo minus funding; used as explosion/trend/skip classifier.",
+      "formula": "(PCHANGE(oi_5m[0,-5])*1.5) + PCHANGE(CVDSPOT('5m',20,true)[0,-1]) - (fr_5m[0]*500)",
+      "typical_condition": ">= 2.2 (explosion), 1.4–2.1 (trend), < 1.4 (skip)"
+    },
+    {
+      "id": "nihilus_3_spot_led_commitment",
+      "source": "user_current",
+      "role": "commitment_meter",
+      "primary_timeframe": "1h",
+      "human_label": "nihilus_3 : Spot-Led Commitment Score",
+      "description": "Spot CVD vs price divergence scaled by spot volume dominance; measures spot-led commitment.",
+      "formula": "(PCHANGE(CVDSPOT('1h',20,true)[0,-1]) - PCHANGE(price_1h[0,-1])) * (SMA(volspot_1h,3)[0] / (AVG(vol_1h[-1:-10])+1))",
+      "typical_condition": "> 2"
+    },
+    {
+      "id": "oi_change_6h",
+      "source": "user_current",
+      "role": "fuel_meter",
+      "primary_timeframe": "1h",
+      "human_label": "oi change 6hrs",
+      "description": "Raw OI percentage change over last 6 hours.",
+      "formula": "PCHANGE(oi_1h[0,-5])",
+      "typical_condition": "> 40"
+    },
+    {
+      "id": "oi_fuel_1h_change",
+      "source": "user_current",
+      "role": "fuel_meter",
+      "primary_timeframe": "1h",
+      "human_label": "OI Fuel 1hr change",
+      "description": "Very short-term OI change between last two hours.",
+      "formula": "PCHANGE(oi_1h,-1,-2)",
+      "typical_condition": "high positive or negative"
+    },
+    {
+      "id": "oi_multi_tf_score",
+      "source": "user_current",
+      "role": "multi_tf_regime",
+      "primary_timeframe": "mixed",
+      "human_label": "OI Multi-TF Score",
+      "description": "Average of 5m and 1h OI changes; global build/unwind meter.",
+      "formula": "(PCHANGE(oi_5m[0,-5]) + PCHANGE(oi_1h[0,-1]) + PCHANGE(oi_1h[0,-3])) / 3",
+      "typical_condition": "> 0.6 build, < -0.6 unwind"
+    },
+    {
+      "id": "oi_stall_unwind_trigger",
+      "source": "user_current",
+      "role": "dump_trigger",
+      "primary_timeframe": "5m",
+      "human_label": "OI stall / unwind trigger",
+      "description": "Negated short-horizon OI change; >0 implies OI decreasing and unwind starting.",
+      "formula": "-PCHANGE(oi_5m[0,-3])",
+      "typical_condition": "> 0"
+    },
+    {
+      "id": "oi_dollar_pulse",
+      "source": "user_current",
+      "role": "notional_flow",
+      "primary_timeframe": "5m",
+      "human_label": "OI-Dollar Pulse (normalize by notional)",
+      "description": "Change in OI*price notional over last 3 bars; positive = pump, negative = dump.",
+      "formula": "((oi_5m[0]*price_5m[0]-oi_5m[-3]*price_5m[-3]) / ((oi_5m[-3]*price_5m[-3])+0.001)) * 100",
+      "typical_condition": "positive = pump, negative = dump"
+    },
+    {
+      "id": "predicted_funding_rate_change_1h",
+      "source": "user_current",
+      "role": "funding_forecast",
+      "primary_timeframe": "1h",
+      "human_label": "Predicted funding rate change 1hr",
+      "description": "Projected change in predicted funding over 1 hour.",
+      "formula": "PCHANGE(pfr_1h,0,-1)",
+      "typical_condition": "large magnitude moves"
+    },
+    {
+      "id": "price_change_6h",
+      "source": "user_current",
+      "role": "htf_range_check",
+      "primary_timeframe": "1h",
+      "human_label": "price change 6hrs",
+      "description": "6h price percentage change; used to flag flat vs trending environments.",
+      "formula": "PCHANGE(price_1h[0,-5])",
+      "typical_condition": "< 3"
+    },
+    {
+      "id": "price_change_15m",
+      "source": "user_current",
+      "role": "ltf_momentum",
+      "primary_timeframe": "5m",
+      "human_label": "Price Chg 15 m",
+      "description": "15m rate of change on 5m series.",
+      "formula": "ROC(price_5m, 3)[0]",
+      "typical_condition": "used as raw 15m ROC"
+    },
+    {
+      "id": "spot_volume_expansion_vs_average",
+      "source": "user_current",
+      "role": "spot_rvol",
+      "primary_timeframe": "5m",
+      "human_label": "Spot Volume Expansion vs Average",
+      "description": "Recent 3x5m spot volume vs 20-bar spot baseline; >1.1 means expansion.",
+      "formula": "SMA(volspot_5m,3)[0] / AVG(volspot_5m[-1:-20])",
+      "typical_condition": "> 1.1"
+    },
+    {
+      "id": "stealth_oi_accumulation_price_flat",
+      "source": "user_current",
+      "role": "stealth_accumulation",
+      "primary_timeframe": "1h",
+      "human_label": "Stealth OI Accumulation (price-flat build)",
+      "description": "OI change minus penalty for price movement; ideal stealth build is high OI with flat price.",
+      "formula": "PCHANGE(oi_1h[0,-1]) - 3*((PCHANGE(price_1h[0,-1])^2)^0.5)",
+      "typical_condition": "> 4"
+    },
+    {
+      "id": "stealth_oi_accumulation_1",
+      "source": "user_current",
+      "role": "stealth_accumulation",
+      "primary_timeframe": "1h",
+      "human_label": "Stealth OI Accumulation 1",
+      "description": "20h OI percentage change.",
+      "formula": "PCHANGE(oi_1h[0,-20])",
+      "typical_condition": "> 10"
+    },
+    {
+      "id": "stealth_oi_accumulation_2_price",
+      "source": "user_current",
+      "role": "stealth_accumulation",
+      "primary_timeframe": "1h",
+      "human_label": "Stealth OI Accumulation 2 (price)",
+      "description": "20h price range relative to 20h SMA; small values mean flat price.",
+      "formula": "(MAX(price_1h[-1:-20]) - MIN(price_1h[-1:-20])) / SMA(price_1h,20)[0]",
+      "typical_condition": "< 0.05"
+    },
+    {
+      "id": "sustained_oi_growth",
+      "source": "user_current",
+      "role": "htf_trend_fuel",
+      "primary_timeframe": "1d",
+      "human_label": "Sustained OI Growth",
+      "description": "Daily OI percentage change minus price percentage change; sustained positive indicates strong fuel.",
+      "formula": "PCHANGE(oi_1d[0,-5]) - PCHANGE(price_1d[0,-5])",
+      "typical_condition": "> 10"
+    },
+    {
+      "id": "taker_sell_pressure_ratio_1h",
+      "source": "user_current",
+      "role": "dump_helper",
+      "primary_timeframe": "1h",
+      "human_label": "Taker Sell Pressure Ratio 1h (Aggressive sells)",
+      "description": "Taker sell dominance in 1h; >0.55 supports dump/short setups.",
+      "formula": "SUM(volsell_1h[0:-1]) / SUM(vol_1h[0:-1])",
+      "typical_condition": "> 0.55"
+    },
+    {
+      "id": "vol_spike_5m",
+      "source": "user_current",
+      "role": "spike_detector",
+      "primary_timeframe": "5m",
+      "human_label": "Vol spike",
+      "description": "One-bar 5m volume percentage change; extreme values flag violent spikes.",
+      "formula": "PCHANGE(vol_5m[0,-1])",
+      "typical_condition": "> 500"
+    }
+  ]
+}
