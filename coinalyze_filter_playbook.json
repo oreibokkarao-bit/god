@@ -1,0 +1,501 @@
+{
+  "playbook_name": "coinalyze_filter_playbook",
+  "version": "2025-12-08",
+  "author": "Docteja",
+  "description": "Strict Coinalyze filter playbook + custom filters, CSV-mappable.",
+  "conventions": {
+    "indexing": {
+      "current_bar": "[0]",
+      "previous_bar": "[-1]",
+      "ranges": "Use ascending ranges: [-N:-1] (older to newer). Example: [-5:-1] last 4 completed bars."
+    },
+    "change_functions": {
+      "CHANGE": "CHANGE(series[i0,i1]) = absolute delta from i1 to i0",
+      "PCHANGE": "PCHANGE(series[i0,i1]) = percentage change from i1 to i0"
+    },
+    "division_safety": "Guard all denominators with MAX(den,1) or +1. Never use 1e-9.",
+    "functions_allowed": [
+      "SMA",
+      "EMA",
+      "AVG",
+      "SUM",
+      "MIN",
+      "MAX",
+      "ROC",
+      "RSI",
+      "CVD",
+      "CVDSPOT",
+      "PCHANGE",
+      "CHANGE"
+    ],
+    "functions_disallowed": [
+      "IF",
+      "AND",
+      "OR",
+      "SIGN",
+      "ABS",
+      "EXP",
+      "POW",
+      "exponentiation"
+    ],
+    "abs_replacement": {
+      "abs_value": "ABS(x) \u2248 (x*x)",
+      "abs_percent": "For percent-based magnitudes use (x*x)/100 as a penalty term."
+    },
+    "spot_led_preference": "By default, treat spot volume and spot CVD as the leading side; futures should confirm, not lead, unless the filter is explicitly a trap.",
+    "csv_column_naming": "CSV headers must exactly match the 'csv_column' field for each filter. Use lowercase snake_case with timeframe hints where provided.",
+    "character_limit": "Keep each 'expression' under ~300 characters for Coinalyze compatibility."
+  },
+  "filters": [
+    {
+      "id": "fut_spot_vol_ratio_trap_5m",
+      "csv_column": "fut_spot_vol_ratio_trap_5m",
+      "short_name": "Fut / Spot Vol ratio trap",
+      "description": "Futures volume vs spot volume ratio; high values = futures-led trap potential.",
+      "timeframe_primary": "5m",
+      "expression": "(AVG(vol_5m[-5:-1])+1)/(AVG(volspot_5m[-5:-1])+1)",
+      "threshold_hint": "pump_trap_if_>4"
+    },
+    {
+      "id": "buysellvolume_imbalance_5m_9bars",
+      "csv_column": "buysellvolume_imbalance_5m_9bars",
+      "short_name": "BuySellVolume value",
+      "description": "Net taker buy vs sell volume over last 9 bars, normalized by total volume.",
+      "timeframe_primary": "5m",
+      "expression": "(SUM(volbuy_5m[0:-9]) - SUM(volsell_5m[0:-9])) / (AVG(vol_5m[0:-9])+1)",
+      "threshold_hint": "pump_if_>0.2"
+    },
+    {
+      "id": "core_trio_3_oi_change_1h_12bars",
+      "csv_column": "core_trio_3_oi_change_1h_12bars",
+      "short_name": "Core Trio 3",
+      "description": "Open interest % change over last 12h.",
+      "timeframe_primary": "1h",
+      "expression": "PCHANGE(oi_1h[0,-12])",
+      "threshold_hint": "bullish_if_>10"
+    },
+    {
+      "id": "core_trio_1_spot_cvd_change_1h_12bars",
+      "csv_column": "core_trio_1_spot_cvd_change_1h_12bars",
+      "short_name": "Core Trio 1",
+      "description": "Spot CVD % change over last 12h.",
+      "timeframe_primary": "1h",
+      "expression": "PCHANGE(CVDSPOT('1h',20,true)[0,-12])",
+      "threshold_hint": "bullish_if_>15"
+    },
+    {
+      "id": "core_trio_2_fut_cvd_change_1h_12bars",
+      "csv_column": "core_trio_2_fut_cvd_change_1h_12bars",
+      "short_name": "Core Trio 2",
+      "description": "Futures CVD % change over last 12h.",
+      "timeframe_primary": "1h",
+      "expression": "PCHANGE(CVD('1h',20,true)[0,-12])",
+      "threshold_hint": "bearish_if_<-15"
+    },
+    {
+      "id": "cvd_divergence_spot_vs_fut_5m_25m_window",
+      "csv_column": "cvd_divergence_spot_vs_fut_5m_25m_window",
+      "short_name": "CVD divergence (fut sell vs spot)",
+      "description": "Spot vs futures CVD divergence over last 25m, per volume.",
+      "timeframe_primary": "5m",
+      "expression": "((CVDSPOT('5m',20,true)[0]-CVDSPOT('5m',20,true)[-5])/(AVG(volspot_5m[-5:-1])+1)) - ((CVD('5m',20,true)[0]-CVD('5m',20,true)[-5])/(AVG(vol_5m[-5:-1])+1)",
+      "threshold_hint": "dump_if_<=-0.1_pump_if_>=0.1"
+    },
+    {
+      "id": "spot_cvd_slope_25m",
+      "csv_column": "spot_cvd_slope_25m",
+      "short_name": "CVD slope Spot 25m",
+      "description": "Spot CVD change per spot volume over 25 minutes.",
+      "timeframe_primary": "5m",
+      "expression": "(CVDSPOT('5m',20,true)[0]-CVDSPOT('5m',20,true)[-5])/(AVG(volspot_5m[0:-5])+1)",
+      "threshold_hint": "bullish_if_>0"
+    },
+    {
+      "id": "cvd_spot_led_divergence_1h",
+      "csv_column": "cvd_spot_led_divergence_1h",
+      "short_name": "CVD Spot-led divergence",
+      "description": "1h spot CVD % change minus 1h futures CVD % change.",
+      "timeframe_primary": "1h",
+      "expression": "PCHANGE(CVDSPOT('1h',20,true)[0,-1]) - PCHANGE(CVD('1h',20,true)[0,-1])",
+      "threshold_hint": "spot_led_if_>0"
+    },
+    {
+      "id": "dump_aggregated_cvd_momentum_5m_15m",
+      "csv_column": "dump_aggregated_cvd_momentum_5m_15m",
+      "short_name": "Dump Aggregated CVD Momentum",
+      "description": "Sum of futures and spot CVD % changes over last 15 minutes.",
+      "timeframe_primary": "5m",
+      "expression": "PCHANGE(CVD('5m',20,true)[0,-3]) + PCHANGE(CVDSPOT('5m',20,true)[0,-3])",
+      "threshold_hint": "dump_if_<-15"
+    },
+    {
+      "id": "dump_long_liquidation_cascade_5m",
+      "csv_column": "dump_long_liquidation_cascade_5m",
+      "short_name": "Long Liquidation Cascade",
+      "description": "Recent sum of long liqs vs their longer-term average.",
+      "timeframe_primary": "5m",
+      "expression": "SUM(liqlong_5m[0:-2])/(AVG(liqlong_5m[-24:-3])+1)",
+      "threshold_hint": "cascade_if_>3"
+    },
+    {
+      "id": "dump_spot_led_cvd_div_sell_vol_spike",
+      "csv_column": "dump_spot_led_cvd_div_sell_vol_spike",
+      "short_name": "Dump Spot-Led CVD Divergence & Sell Volume Spike",
+      "description": "Spot-led CVD divergence minus futures CVD plus aggressive sell spike.",
+      "timeframe_primary": "5m",
+      "expression": "((CVDSPOT('5m',20,true)[0]-CVDSPOT('5m',20,true)[-3])/(AVG(volspot_5m[-10:-1])+1)) - ((CVD('5m',20,true)[0]-CVD('5m',20,true)[-3])/(AVG(vol_5m[-10:-1])+1)) - (SMA(volsell_5m,3)[0]/(AVG(volsell_5m[-24:-4])+1))",
+      "threshold_hint": "dump_if_<-2"
+    },
+    {
+      "id": "dump_tight_range_breakdown_5m",
+      "csv_column": "dump_tight_range_breakdown_5m",
+      "short_name": "Tight Range Breakdown",
+      "description": "Range compression + breakdown vs current price.",
+      "timeframe_primary": "5m",
+      "expression": "((MAX(highprice_5m[-6:-1])-MIN(lowprice_5m[-6:-1]))/price_5m[-1]) + ((price_5m[0]-MIN(lowprice_5m[-6:-1]))/price_5m[-1])",
+      "threshold_hint": "breakdown_if_<-0.002"
+    },
+    {
+      "id": "dump_trapped_longs_bearish_sentiment",
+      "csv_column": "dump_trapped_longs_bearish_sentiment",
+      "short_name": "Trapped Longs & Bearish Sentiment",
+      "description": "OI vs price % change minus funding, bearish if high.",
+      "timeframe_primary": "5m_+_1h_fr",
+      "expression": "(PCHANGE(oi_5m[0,-3]) - PCHANGE(price_5m[0,-3])) - (fr_1h[0]*100)",
+      "threshold_hint": "dump_if_>5"
+    },
+    {
+      "id": "exit_leverage_exhaustion_ratio_5m",
+      "csv_column": "exit_leverage_exhaustion_ratio_5m",
+      "short_name": "EXIT: Leverage Exhaustion Ratio",
+      "description": "Price % move * funding vs OI % change.",
+      "timeframe_primary": "5m",
+      "expression": "(PCHANGE(price_5m[0,-3])*fr_5m[0]*1000)/(PCHANGE(oi_5m[0,-3])+1)",
+      "threshold_hint": "exit_if_>1.5"
+    },
+    {
+      "id": "explosion_spot_cvd_divergence_lead_1h",
+      "csv_column": "explosion_spot_cvd_divergence_lead_1h",
+      "short_name": "Explosion Pre-Pump Predictor",
+      "description": "Spot CVD % change minus price % change on 1h, leading signal.",
+      "timeframe_primary": "1h",
+      "expression": "PCHANGE(CVDSPOT('1h',20,true)[0,-1]) - PCHANGE(price_1h[0,-1])",
+      "threshold_hint": "pre_pump_if_>2"
+    },
+    {
+      "id": "explosion_pump_reached_top_1h",
+      "csv_column": "explosion_pump_reached_top_1h",
+      "short_name": "Explosion Pump reached top",
+      "description": "Futures CVD % change minus 2x price % change (1h).",
+      "timeframe_primary": "1h",
+      "expression": "PCHANGE(CVD('1h',20,true)[0,-1]) - (PCHANGE(price_1h[0,-1])*2)",
+      "threshold_hint": "pump_over_if_<-1"
+    },
+    {
+      "id": "explosive_breakout_long_consolidation_1h",
+      "csv_column": "explosive_breakout_long_consolidation_1h",
+      "short_name": "Explosive Breakout from Long Consolidation",
+      "description": "Combined OI & spot CVD % changes normalized by recent tight range.",
+      "timeframe_primary": "1h",
+      "expression": "(PCHANGE(oi_1h[0,-3]) + PCHANGE(CVDSPOT('1h',20,true)[0,-3])) / (((MAX(highprice_1h[-4:-1]) - MIN(lowprice_1h[-4:-1])) / (SMA(price_1h,4)[0] + 0.001))*10)",
+      "threshold_hint": "breakout_if_>0.5"
+    },
+    {
+      "id": "funding_rate_anomaly_1h",
+      "csv_column": "funding_rate_anomaly_1h",
+      "short_name": "Funding Rate Anomaly",
+      "description": "Average 1h funding over last 11 bars.",
+      "timeframe_primary": "1h",
+      "expression": "AVG(fr_1h[0:-11])",
+      "threshold_hint": "anomaly_if_much_>0_or_<0"
+    },
+    {
+      "id": "healthy_leverage_growth_oi_1h_6bars",
+      "csv_column": "healthy_leverage_growth_oi_1h_6bars",
+      "short_name": "Healthy Leverage Growth",
+      "description": "OI % change over last 6 hours.",
+      "timeframe_primary": "1h",
+      "expression": "PCHANGE(oi_1h[0,-6])",
+      "threshold_hint": "healthy_if_>0.05"
+    },
+    {
+      "id": "hourly_bid_side_pressure_1h",
+      "csv_column": "hourly_bid_side_pressure_1h",
+      "short_name": "Hourly Bid-Side Pressure",
+      "description": "Buy volume vs sell volume over last 5 hours.",
+      "timeframe_primary": "1h",
+      "expression": "SUM(volbuy_1h[0:-5]) / (SUM(volsell_1h[0:-5])+1)",
+      "threshold_hint": "bullish_if_>1.5"
+    },
+    {
+      "id": "hourly_volume_persistence_1h",
+      "csv_column": "hourly_volume_persistence_1h",
+      "short_name": "Hourly Volume Persistence",
+      "description": "Recent 3h average volume vs 4\u201324h average.",
+      "timeframe_primary": "1h",
+      "expression": "AVG(vol_1h[0:-3]) / (AVG(vol_1h[-24:-4])+1)",
+      "threshold_hint": "squeeze_if_>2"
+    },
+    {
+      "id": "htf_stealth_accumulation_breakout_1h",
+      "csv_column": "htf_stealth_accumulation_breakout_1h",
+      "short_name": "HTF Stealth Accumulation Breakout",
+      "description": "OI+spot CVD % change minus squared price % move (penalize high price drift).",
+      "timeframe_primary": "1h",
+      "expression": "PCHANGE(oi_1h[0,-4]) + PCHANGE(CVDSPOT('1h',20,true)[0,-10]) - ((PCHANGE(price_1h[0,-4])*PCHANGE(price_1h[0,-4]))/100)",
+      "threshold_hint": "breakout_if_>8"
+    },
+    {
+      "id": "htf_volume_weighted_oi_breakout_1h",
+      "csv_column": "htf_volume_weighted_oi_breakout_1h",
+      "short_name": "HTF Volume-Weighted OI Breakout",
+      "description": "Recent OI % change weighted by current volume vs its 10-bar average.",
+      "timeframe_primary": "1h",
+      "expression": "PCHANGE(oi_1h[0,-1]) * (vol_1h[0] / (AVG(vol_1h[0:-10])+1))",
+      "threshold_hint": "breakout_if_high_positive"
+    },
+    {
+      "id": "l1_short_spot_cvd_accel_down_1h",
+      "csv_column": "l1_short_spot_cvd_accel_down_1h",
+      "short_name": "L1 SHORT: Spot CVD acceleration down",
+      "description": "Spot CVD acceleration (current vs previous bar % change proxy).",
+      "timeframe_primary": "1h",
+      "expression": "PCHANGE(CVDSPOT('1h',10,true)[0,-1]) - PCHANGE(CVDSPOT('1h',10,true)[-1,-2])",
+      "threshold_hint": "short_bias_if_<0"
+    },
+    {
+      "id": "layer1_spot_cvd_vs_price_divergence_1d",
+      "csv_column": "layer1_spot_cvd_vs_price_divergence_1d",
+      "short_name": "Layer 1: Spot CVD vs Price Divergence",
+      "description": "Daily spot CVD % change over 9 days.",
+      "timeframe_primary": "1d",
+      "expression": "PCHANGE(CVDSPOT('1d',20,true)[0,-9])",
+      "threshold_hint": "strong_spot_commit_if_>10"
+    },
+    {
+      "id": "layer1_oi_growth_in_consolidation_price_1d",
+      "csv_column": "layer1_oi_growth_in_consolidation_price_1d",
+      "short_name": "Layer 1 Stealth pt2: price drift",
+      "description": "Daily price % change over 9 days (for consolidation vs trend separation).",
+      "timeframe_primary": "1d",
+      "expression": "PCHANGE(price_1d[0,-9])",
+      "threshold_hint": "consolidating_if_>-5"
+    },
+    {
+      "id": "layer1_oi_growth_in_consolidation_oi_1d",
+      "csv_column": "layer1_oi_growth_in_consolidation_oi_1d",
+      "short_name": "Layer 1: Sustained OI Growth pt1",
+      "description": "Daily OI % change over 9 days.",
+      "timeframe_primary": "1d",
+      "expression": "PCHANGE(oi_1d[0,-9])",
+      "threshold_hint": "strong_build_if_>15"
+    },
+    {
+      "id": "layer2_volume_persistence_pre_breakout_1h",
+      "csv_column": "layer2_volume_persistence_pre_breakout_1h",
+      "short_name": "Layer 2: Volume Persistence Pre-Breakout",
+      "description": "Current 1h volume vs last 9 bars.",
+      "timeframe_primary": "1h",
+      "expression": "vol_1h[0] / (AVG(vol_1h[-10:-1])+1)",
+      "threshold_hint": "pre_breakout_if_>2"
+    },
+    {
+      "id": "long_squeeze_exhaustion_1h",
+      "csv_column": "long_squeeze_exhaustion_1h",
+      "short_name": "Long-Squeeze Exhaustion 1h",
+      "description": "Negative price % change minus OI % change (1h).",
+      "timeframe_primary": "1h",
+      "expression": "(-PCHANGE(price_1h[0,-1])) - PCHANGE(oi_1h[0,-1])",
+      "threshold_hint": "long_reversal_if_>2"
+    },
+    {
+      "id": "ltf_momentum_ignition_5m",
+      "csv_column": "ltf_momentum_ignition_5m",
+      "short_name": "LTF Momentum Ignition",
+      "description": "Short-term spot CVD % change + OI % change.",
+      "timeframe_primary": "5m",
+      "expression": "(PCHANGE(CVDSPOT('5m',30,true)[0,-1])*1.5) + PCHANGE(oi_5m[0,-1])",
+      "threshold_hint": "ignition_if_>10"
+    },
+    {
+      "id": "nihilus_vol_1d",
+      "csv_column": "nihilus_vol_1d",
+      "short_name": "Nihilus vol 1",
+      "description": "Daily volume vs 20-day SMA volume.",
+      "timeframe_primary": "1d",
+      "expression": "vol_1d[0] / (SMA(vol_1d,20)[0] + 1)",
+      "threshold_hint": "elevated_if_>2"
+    },
+    {
+      "id": "nihilus_2_oi_fuel_meter_5m",
+      "csv_column": "nihilus_2_oi_fuel_meter_5m",
+      "short_name": "nihilus_2 OI Fuel",
+      "description": "Short-term OI % change + spot CVD % change minus funding penalty.",
+      "timeframe_primary": "5m",
+      "expression": "(PCHANGE(oi_5m[0,-5])*1.5) + PCHANGE(CVDSPOT('5m',20,true)[0,-1]) - (fr_5m[0]*500)",
+      "threshold_hint": "explosion_if_>=2.2_trend_if_1.4_to_2.1_skip_if_<1.4"
+    },
+    {
+      "id": "nihilus_3_spot_led_commitment_1h",
+      "csv_column": "nihilus_3_spot_led_commitment",
+      "short_name": "Spot-Led Commitment Score",
+      "description": "Spot CVD vs price % change scaled by spot vs total volume.",
+      "timeframe_primary": "1h",
+      "expression": "(PCHANGE(CVDSPOT('1h',20,true)[0,-1]) - PCHANGE(price_1h[0,-1])) * (SMA(volspot_1h,3)[0] / (AVG(vol_1h[-10:-1])+1))",
+      "threshold_hint": "strong_commit_if_>2"
+    },
+    {
+      "id": "oi_change_6h_1h",
+      "csv_column": "oi_change_6h_1h",
+      "short_name": "OI change 6hrs",
+      "description": "1h OI % change over last 5 bars (~6h).",
+      "timeframe_primary": "1h",
+      "expression": "PCHANGE(oi_1h[0,-5])",
+      "threshold_hint": "strong_build_if_>40"
+    },
+    {
+      "id": "oi_multi_tf_score",
+      "csv_column": "oi_multi_tf_score",
+      "short_name": "OI Multi-TF Score",
+      "description": "Average OI % change across 5m and 1h (multi-horizon).",
+      "timeframe_primary": "5m_+_1h",
+      "expression": "(PCHANGE(oi_5m[0,-5]) + PCHANGE(oi_1h[0,-1]) + PCHANGE(oi_1h[0,-3])) / 3",
+      "threshold_hint": "build_if_>0.6_unwind_if_<-0.6"
+    },
+    {
+      "id": "oi_unwind_trigger_5m",
+      "csv_column": "oi_unwind_trigger_5m",
+      "short_name": "OI stall / unwind trigger",
+      "description": "Negative of short-term OI % change.",
+      "timeframe_primary": "5m",
+      "expression": "-PCHANGE(oi_5m[0,-3])",
+      "threshold_hint": "cascade_dump_starting_if_>0"
+    },
+    {
+      "id": "oi_dollar_pulse_5m",
+      "csv_column": "oi_dollar_pulse_5m",
+      "short_name": "OI-Dollar Pulse (oi price corr)",
+      "description": "Dollar OI (OI * price) % change over last 3 bars.",
+      "timeframe_primary": "5m",
+      "expression": "((oi_5m[0]*price_5m[0]-oi_5m[-3]*price_5m[-3]) / ((oi_5m[-3]*price_5m[-3])+0.001)) * 100",
+      "threshold_hint": "pump_if_positive_dump_if_negative"
+    },
+    {
+      "id": "parallel_aggressive_taker_short_liq_cascade_5m",
+      "csv_column": "parallel_aggressive_taker_short_liq_cascade_5m",
+      "short_name": "Parallel Aggressive Taker & Short Liquidation Cascade",
+      "description": "Price ROC + OI % change + short liqs per volume minus funding penalty.",
+      "timeframe_primary": "5m",
+      "expression": "ROC(price_5m,3)[0] + PCHANGE(oi_5m[0,-3]) + (SUM(liqshort_5m[0:-3])/(SUM(vol_5m[0:-3])+1))*200 - AVG(fr_5m[-6:-1])*2000",
+      "threshold_hint": "cascade_if_>12"
+    },
+    {
+      "id": "parallel_oi_fueled_squeeze_impulse_5m",
+      "csv_column": "parallel_oi_fueled_squeeze_impulse_5m",
+      "short_name": "Parallel OI-Fueled Squeeze Impulse",
+      "description": "OI % change + spot CVD % change + price ROC minus funding penalty.",
+      "timeframe_primary": "5m",
+      "expression": "PCHANGE(oi_5m[0,-3]) + PCHANGE(CVDSPOT('5m',20,true)[0,-3]) + ROC(price_5m,3)[0] - AVG(fr_5m[-6:-1])*2000",
+      "threshold_hint": "squeeze_if_>8"
+    },
+    {
+      "id": "parallel_pure_momentum_flow_burst_5m",
+      "csv_column": "parallel_pure_momentum_flow_burst_5m",
+      "short_name": "Parallel Pure Momentum & Flow Burst",
+      "description": "Buy % on fut + buy % on spot + price ROC + spot CVD % change.",
+      "timeframe_primary": "5m",
+      "expression": "(volbuy_5m[0]/(vol_5m[0]+1)*100) + (volspotbuy_5m[0]/(volspot_5m[0]+1)*100) + ROC(price_5m,1)[0] + PCHANGE(CVDSPOT('5m',20,true)[0,-1])",
+      "threshold_hint": "burst_if_>150"
+    },
+    {
+      "id": "parallel_rvol_tight_range_breakout_5m",
+      "csv_column": "parallel_rvol_tight_range_breakout_5m",
+      "short_name": "Parallel RVOL + Tight-Range Breakout",
+      "description": "Price ROC + spot RVOL minus relative range width.",
+      "timeframe_primary": "5m",
+      "expression": "ROC(price_5m,3)[0] + volspot_5m[0]/(AVG(volspot_5m[-20:-1])+1) - ((MAX(highprice_5m[-12:-1]) - MIN(lowprice_5m[-12:-1]))/(SMA(price_5m,12)[-1]+0.01)*10)",
+      "threshold_hint": "breakout_if_>5"
+    },
+    {
+      "id": "parallel_spot_led_divergence_momentum_5m",
+      "csv_column": "parallel_spot_led_divergence_momentum_5m",
+      "short_name": "Parallel Spot-Led Divergence & Momentum",
+      "description": "Spot CVD vs futures CVD divergence + price ROC + spot RVOL.",
+      "timeframe_primary": "5m",
+      "expression": "PCHANGE(CVDSPOT('5m',20,true)[0,-3]) - PCHANGE(CVD('5m',20,true)[0,-3]) + ROC(price_5m,3)[0] + volspot_5m[0]/(AVG(volspot_5m[-20:-1])+1)",
+      "threshold_hint": "spot_led_momo_if_>10"
+    },
+    {
+      "id": "predicted_funding_rate_change_1h",
+      "csv_column": "predicted_funding_rate_change_1h",
+      "short_name": "Predicted funding rate change 1hr",
+      "description": "1h PFR % change last bar.",
+      "timeframe_primary": "1h",
+      "expression": "PCHANGE(pfr_1h[0,-1])",
+      "threshold_hint": "flip_if_large_positive_or_negative"
+    },
+    {
+      "id": "spot_volume_expansion_vs_average_5m",
+      "csv_column": "spot_volume_expansion_vs_average_5m",
+      "short_name": "Spot Volume Expansion",
+      "description": "Current 5m spot volume vs last 20 bars.",
+      "timeframe_primary": "5m",
+      "expression": "SMA(volspot_5m,3)[0] / (AVG(volspot_5m[-20:-1])+1)",
+      "threshold_hint": "expansion_if_>1.1"
+    },
+    {
+      "id": "stealth_oi_accumulation_price_flat_build_1h",
+      "csv_column": "stealth_oi_accumulation_price_flat_build_1h",
+      "short_name": "Stealth OI Accumulation (price-flat build)",
+      "description": "Safe ABS-free stealth accumulation formula (OI % - squared price %).",
+      "timeframe_primary": "1h",
+      "expression": "PCHANGE(oi_1h[0,-1]) - ((PCHANGE(price_1h[0,-1])*PCHANGE(price_1h[0,-1]))/100*5)",
+      "threshold_hint": "stealth_build_if_>4"
+    },
+    {
+      "id": "stealth_oi_accumulation_oi_change_20h_1h",
+      "csv_column": "stealth_oi_accumulation_oi_change_20h_1h",
+      "short_name": "Stealth OI Accumulation 1",
+      "description": "1h OI % change over last 20 bars (~20h).",
+      "timeframe_primary": "1h",
+      "expression": "PCHANGE(oi_1h[0,-20])",
+      "threshold_hint": "strong_if_>10"
+    },
+    {
+      "id": "stealth_oi_accumulation_price_range_20h_1h",
+      "csv_column": "stealth_oi_accumulation_price_range_20h_1h",
+      "short_name": "Stealth OI Accumulation 2 (price)",
+      "description": "Price range vs 20h SMA (flatness of price during OI build).",
+      "timeframe_primary": "1h",
+      "expression": "(MAX(price_1h[-20:-1]) - MIN(price_1h[-20:-1])) / (SMA(price_1h,20)[0] + 0.0001)",
+      "threshold_hint": "flat_if_<0.05"
+    },
+    {
+      "id": "sustained_oi_growth_1d_5bars",
+      "csv_column": "sustained_oi_growth_1d_5bars",
+      "short_name": "Sustained OI Growth",
+      "description": "Daily OI % change minus daily price % change over last 5 days.",
+      "timeframe_primary": "1d",
+      "expression": "PCHANGE(oi_1d[0,-5]) - PCHANGE(price_1d[0,-5])",
+      "threshold_hint": "sustained_if_>10"
+    },
+    {
+      "id": "taker_sell_pressure_ratio_1h",
+      "csv_column": "taker_sell_pressure_ratio_1h",
+      "short_name": "Taker Sell Pressure Ratio 1h",
+      "description": "Taker sell dominance on 1h.",
+      "timeframe_primary": "1h",
+      "expression": "SUM(volsell_1h[0:-1]) / (SUM(vol_1h[0:-1])+1)",
+      "threshold_hint": "dump_risk_if_>0.55"
+    },
+    {
+      "id": "vol_spike_5m",
+      "csv_column": "vol_spike_5m",
+      "short_name": "Vol spike",
+      "description": "5m volume % change vs previous bar.",
+      "timeframe_primary": "5m",
+      "expression": "PCHANGE(vol_5m[0,-1])",
+      "threshold_hint": "spike_if_>500"
+    }
+  ]
+}
